@@ -13,6 +13,7 @@ from langchain.chains import ConversationalRetrievalChain
 from langchain.chains.qa_with_sources import load_qa_with_sources_chain
 from langchain.chains.llm import LLMChain
 from langchain.chains.chat_vector_db.prompts import CONDENSE_QUESTION_PROMPT
+from langchain.prompts import PromptTemplate
 from langchain.document_loaders.base import BaseLoader
 from langchain.document_loaders import WebBaseLoader
 from langchain.text_splitter import TokenTextSplitter, TextSplitter
@@ -40,6 +41,7 @@ class LLMHelper:
         llm: AzureOpenAI = None,
         temperature: float = None,
         max_tokens: int = None,
+        custom_prompt: str = "",
         vector_store: VectorStore = None,
         k: int = None,
         pdf_parser: AzureFormRecognizerClient = None,
@@ -62,6 +64,8 @@ class LLMHelper:
         self.deployment_type: str = os.getenv("OPENAI_DEPLOYMENT_TYPE", "Text")
         self.temperature: float = float(os.getenv("OPENAI_TEMPERATURE", 0.7)) if temperature is None else temperature
         self.max_tokens: int = int(os.getenv("OPENAI_MAX_TOKENS", -1)) if max_tokens is None else max_tokens
+        self.prompt = PROMPT if custom_prompt == '' else PromptTemplate(template=custom_prompt, input_variables=["summaries", "question"])
+
 
         # Vector store settings
         self.vector_store_address: str = os.getenv('REDIS_ADDRESS', "localhost")
@@ -80,7 +84,7 @@ class LLMHelper:
         self.text_splitter: TextSplitter = TokenTextSplitter(chunk_size=self.chunk_size, chunk_overlap=self.chunk_overlap) if text_splitter is None else text_splitter
         self.embeddings: OpenAIEmbeddings = OpenAIEmbeddings(model=self.model, chunk_size=1) if embeddings is None else embeddings
         if self.deployment_type == "Chat":
-            self.llm: ChatOpenAI = ChatOpenAI(model_name=self.deployment_name, engine=self.deployment_name, temperature=self.temperature, max_tokens=self.max_tokens) if llm is None else llm
+            self.llm: ChatOpenAI = ChatOpenAI(model_name=self.deployment_name, engine=self.deployment_name, temperature=self.temperature, max_tokens=self.max_tokens if self.max_tokens != -1 else None) if llm is None else llm
         else:
             self.llm: AzureOpenAI = AzureOpenAI(deployment_name=self.deployment_name, temperature=self.temperature, max_tokens=self.max_tokens) if llm is None else llm
         self.vector_store: RedisExtended = RedisExtended(redis_url=self.vector_store_full_address, index_name=self.index_name, embedding_function=self.embeddings.embed_query) if vector_store is None else vector_store   
@@ -112,6 +116,8 @@ class LLMHelper:
             pattern = re.compile(r'[\x00-\x1f\x7f\u0080-\u00a0\u2000-\u3000\ufff0-\uffff]')
             for(doc) in docs:
                 doc.page_content = re.sub(pattern, '', doc.page_content)
+                if doc.page_content == '':
+                    docs.remove(doc)
             
             keys = []
             for i, doc in enumerate(docs):
@@ -157,7 +163,7 @@ class LLMHelper:
 
     def get_semantic_answer_lang_chain(self, question, chat_history):
         question_generator = LLMChain(llm=self.llm, prompt=CONDENSE_QUESTION_PROMPT, verbose=False)
-        doc_chain = load_qa_with_sources_chain(self.llm, chain_type="stuff", verbose=False, prompt=PROMPT)
+        doc_chain = load_qa_with_sources_chain(self.llm, chain_type="stuff", verbose=True, prompt=self.prompt)
         chain = ConversationalRetrievalChain(
             retriever=self.vector_store.as_retriever(),
             question_generator=question_generator,
